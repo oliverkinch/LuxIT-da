@@ -6,7 +6,7 @@ da_synthetic_data_generation.py.
 Supported sources:
   - wikipedia          oliverkinch/danish_wikipedia
   - danmarks_statistik oliverkinch/danmarks-statistik
-  - dynaword           danish-foundation-models/danish-dynaword  (7 subsets)
+  - dynaword           danish-foundation-models/danish-dynaword  (all allowed subsets)
   - tidsskrift         oliverkinch/tidsskrift-dk
 
 Each source is saved to Data/<source>.json as a list of normalised article dicts.
@@ -68,14 +68,23 @@ DATASET_CONFIGS = {
         "split": "train",
         "subsets": None,            # resolved dynamically from HF configs
         "dynamic_subsets": True,
-        "exclude_subsets": ["relig"],
+        "exclude_subsets": [
+            "relig",
+            "jvj",
+            "grundtvig",
+            "gutenberg",
+            "enevaeldens_nyheder",
+            "historical-danish-handwriting",
+            "kb_historical_letters",
+            "memo",
+            "wikisource",
+        ],
         "id_field": "id",
         "columns": {
             "id":     "id",
             "text":   "text",
             "source": "source",
             "date":   "added",      # 'added' → 'date'
-            "created": "created",
         },
         "output_file": "Data/dynaword.json",
     },
@@ -138,42 +147,6 @@ def normalise_record(row, columns: dict) -> dict:
                 val = val.isoformat()
             record[out_name] = val
     return record
-
-
-def _parse_date_part(value: str) -> Optional[date]:
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def is_older_than_years(record: dict, years: int = 30) -> bool:
-    """
-    Return True if the newest known creation date in the record is older than
-    `years` years from today.
-
-    Records with missing/invalid `created` are kept (return False).
-    """
-    created = record.get("created")
-    if not created or not isinstance(created, str):
-        return False
-
-    parts = [p for p in (part.strip() for part in created.split(",")) if p]
-    parsed = [_parse_date_part(p) for p in parts]
-    parsed = [p for p in parsed if p is not None]
-    if not parsed:
-        return False
-
-    newest_created = max(parsed)
-    today = date.today()
-    try:
-        cutoff = today.replace(year=today.year - years)
-    except ValueError:
-        cutoff = today.replace(month=2, day=28, year=today.year - years)
-    return newest_created < cutoff
 
 
 def resolve_subsets(name: str, cfg: dict) -> list[str]:
@@ -268,8 +241,6 @@ def fetch_multi_subset_dataset(
             if not text or len(text) < MIN_TEXT_LENGTH:
                 continue
             if is_boilerplate(text):
-                continue
-            if name == "dynaword" and is_older_than_years(record, years=30):
                 continue
             record.setdefault("source", subset)
             if "id" in record:
