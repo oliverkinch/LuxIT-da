@@ -1,0 +1,18 @@
+# Environment
+.env
+
+# Generated data (large; fetch/generate locally)
+generation/Data/
+generation/*.jsonl
+generation/*.json
+generation/*.csv
+generation/*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
