@@ -20,10 +20,11 @@ Usage:
 import json
 import os
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from datasets import load_dataset
+from datasets import get_dataset_config_names, load_dataset
 from tqdm import tqdm
 
 
@@ -65,21 +66,16 @@ DATASET_CONFIGS = {
         "hf_name": "danish-foundation-models/danish-dynaword",
         "hf_config": None,          # config is specified per-subset
         "split": "train",
-        "subsets": [                # loaded individually then merged
-            "ai-aktindsigt",
-            "miljoeportalen",
-            "skat",
-            "tv2r",
-            "nordjyllandnews",
-            "ft",
-            "danske-taler",
-        ],
+        "subsets": None,            # resolved dynamically from HF configs
+        "dynamic_subsets": True,
+        "exclude_subsets": ["relig"],
         "id_field": "id",
         "columns": {
             "id":     "id",
             "text":   "text",
             "source": "source",
             "date":   "added",      # 'added' → 'date'
+            "created": "created",
         },
         "output_file": "Data/dynaword.json",
     },
@@ -138,8 +134,56 @@ def normalise_record(row, columns: dict) -> dict:
             # Coerce to plain Python types (HF datasets can return custom objects)
             if hasattr(val, "tolist"):
                 val = val.tolist()
+            if isinstance(val, (date, datetime)):
+                val = val.isoformat()
             record[out_name] = val
     return record
+
+
+def _parse_date_part(value: str) -> Optional[date]:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def is_older_than_years(record: dict, years: int = 30) -> bool:
+    """
+    Return True if the newest known creation date in the record is older than
+    `years` years from today.
+
+    Records with missing/invalid `created` are kept (return False).
+    """
+    created = record.get("created")
+    if not created or not isinstance(created, str):
+        return False
+
+    parts = [p for p in (part.strip() for part in created.split(",")) if p]
+    parsed = [_parse_date_part(p) for p in parts]
+    parsed = [p for p in parsed if p is not None]
+    if not parsed:
+        return False
+
+    newest_created = max(parsed)
+    today = date.today()
+    try:
+        cutoff = today.replace(year=today.year - years)
+    except ValueError:
+        cutoff = today.replace(month=2, day=28, year=today.year - years)
+    return newest_created < cutoff
+
+
+def resolve_subsets(name: str, cfg: dict) -> list[str]:
+    """Resolve subset list, using dynamic Hugging Face config names when needed."""
+    if cfg.get("subsets"):
+        return cfg["subsets"]
+
+    all_configs = get_dataset_config_names(cfg["hf_name"])
+    excluded = set(cfg.get("exclude_subsets", []))
+    return [c for c in all_configs if c != "default" and c not in excluded]
 
 
 def fetch_single_dataset(name: str, cfg: dict, max_samples: Optional[int], base_path: str) -> int:
@@ -190,8 +234,11 @@ def fetch_multi_subset_dataset(
     output_path = Path(base_path) / cfg["output_file"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    subsets = resolve_subsets(name, cfg)
+    print(f"[{name}] Using {len(subsets)} subset(s): {', '.join(subsets)}")
+
     # Determine per-subset cap
-    num_subsets = len(cfg["subsets"])
+    num_subsets = len(subsets)
     if per_subset is not None:
         subset_cap = per_subset
     elif max_samples is not None:
@@ -203,7 +250,7 @@ def fetch_multi_subset_dataset(
     # Collect records per subset
     subset_buckets: list[list] = []
 
-    for subset in cfg["subsets"]:
+    for subset in subsets:
         print(f"[{name}] Loading subset '{subset}' from {cfg['hf_name']} …")
         try:
             ds = load_dataset(cfg["hf_name"], subset, split=cfg["split"])
@@ -221,6 +268,8 @@ def fetch_multi_subset_dataset(
             if not text or len(text) < MIN_TEXT_LENGTH:
                 continue
             if is_boilerplate(text):
+                continue
+            if name == "dynaword" and is_older_than_years(record, years=30):
                 continue
             record.setdefault("source", subset)
             if "id" in record:
@@ -260,7 +309,7 @@ def fetch_source(
 
     cfg = DATASET_CONFIGS[name]
 
-    if cfg["subsets"]:
+    if cfg.get("dynamic_subsets") or cfg.get("subsets"):
         return fetch_multi_subset_dataset(name, cfg, max_samples, base_path, per_subset=per_subset)
     else:
         return fetch_single_dataset(name, cfg, max_samples, base_path)
